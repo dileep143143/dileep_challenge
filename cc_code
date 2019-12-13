@@ -1,0 +1,25 @@
+import re
+import itertools
+
+
+def main():
+    for x in range(int(input())):
+        cc_number = input().strip()
+        cc_format = '^([456][0-9]{3})-?([0-9]{4})-?([0-9]{4})-?([0-9]{4})$'
+
+        check_intial_format = re.search(cc_format, cc_number)
+
+        if check_intial_format:
+
+            cc_raw_number = cc_number.replace("-", "")
+            if max(len(list(g)) for _, g in itertools.groupby(cc_raw_number)) > 3:
+                print('Invalid')
+            else:
+                print('Valid')
+
+        else:
+            print('Invalid')
+
+
+if __name__ == "__main__":
+    main()
