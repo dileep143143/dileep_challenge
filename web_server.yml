@@ -1,0 +1,27 @@
+---
+
+- name: run the playbook locally to install and configure web server
+  hosts: localhost
+  become: yes
+
+  tasks:
+  - name: install httpd
+    package: 
+      name: "{{item}}"
+      state: present
+    with_items:
+      - httpd
+
+
+  - template:
+      src: index.html.j2
+      dest: /var/www/html/index.html
+      mode: '0644'
+
+  - name: start services  httpd
+    service:
+      name: "{{item}}"
+      enabled: true
+      state: restarted
+    with_items:
+      - httpd

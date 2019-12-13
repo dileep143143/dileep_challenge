@@ -1,0 +1,604 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "AWS CloudFormation Template for Webserver.",
+    "Metadata": {
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "VPC Information"
+                    },
+                    "Parameters": [
+                        "VPC",
+                        "PublicSubnets"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "EC2 Information"
+                    },
+                    "Parameters": [
+                        "ImageId",
+                        "InstanceType",
+                        "KeyName"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "S3 bucket for webserver Configuration"
+                    },
+                    "Parameters": [
+                        "AutomationBucket",
+                        "VersionId"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "HostedZone Id Information"
+                    },
+                    "Parameters": [
+                        "HostedZoneId"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Cert Arn Information"
+                    },
+                    "Parameters": [
+                        "CertArn"
+                    ]
+                }
+            ]
+        }
+    },
+    "Parameters": {
+        "VPC": {
+            "Description": "Choose which VPC the Load Balancer and ASG should be deployed.",
+            "Type": "AWS::EC2::VPC::Id",
+            "Default": ""
+        },
+        "PublicSubnets": {
+            "Description": "Subnet list for the load balancer and ASG.",
+            "Type": "List<AWS::EC2::Subnet::Id>",
+            "Default": "subnet-******"
+        },
+        "KeyName": {
+            "Description": "Keypair for the EC2.",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+        "InstanceType": {
+            "Description": "Type of EC2 instance.",
+            "Type": "String",
+            "Default": "t2.micro"
+        },
+        "ImageId": {
+            "Description": "AMI of EC2 instance.",
+            "Type": "String",
+            "Default": "ami-xxxxx"
+        },
+        "StatusEmail": {
+            "Description": "Email Id to notify of any ASG changes.",
+            "Type": "String",
+            "Default": "no-replay@gmail.com"
+        },
+        "AutomationBucket": {
+            "Description": "S3 bucketname for the webserver Configuration.",
+            "Type": "String",
+            "Default": "webserver-config-us-east-1"
+        },
+        "VersionId": {
+            "Description": "Version Id for the Code Change.",
+            "Type": "String"
+        },
+        "HostedZoneId": {
+            "Description": "HostedZone Id info for public load balancer custom DNS.",
+            "Type": "String",
+            "Default": ""
+        },
+        "CertArn": {
+            "Description": "CertArn for load balancer.",
+            "Type": "String",
+            "Default": ""
+        }
+    },
+    "Resources": {
+        "WebServerS3AccessRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "ec2.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Path": "/",
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "s3_cloudwatchlogs_access",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:*"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:aws:s3:::${AutomationBucket}"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:s3:::${AutomationBucket}/*"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents",
+                                        "logs:DescribeLogStreams"
+                                    ],
+                                    "Resource": [
+                                        "arn:aws:logs:*:*:*"
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "RoleName": {
+                    "Fn::Sub": "Ec2WebServerS3Access-${AWS::Region}"
+                }
+            }
+        },
+        "Ec2WebServerInstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "Roles": [
+                    {
+                        "Ref": "WebServerS3AccessRole"
+                    }
+                ]
+            }
+        },
+        "WebServerNotificationTopic": {
+            "Type": "AWS::SNS::Topic",
+            "Properties": {
+                "Subscription": [
+                    {
+                        "Endpoint": {
+                            "Ref": "StatusEmail"
+                        },
+                        "Protocol": "email"
+                    }
+                ]
+            }
+        },
+        "LaunchConfig": {
+            "Type": "AWS::AutoScaling::LaunchConfiguration",
+            "Properties": {
+                "AssociatePublicIpAddress" : true,
+                "ImageId": {
+                    "Ref": "ImageId"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "WebServerSecurityGroup"
+                    }
+                ],
+                "InstanceType": {
+                    "Ref": "InstanceType"
+                },
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "IamInstanceProfile": {
+                    "Ref": "Ec2WebServerInstanceProfile"
+                },
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "#!/bin/bash",
+                                "\n",
+                                "aws s3 cp s3://",
+                                {
+                                    "Ref": "AutomationBucket"
+                                },
+                                "/",
+                                {
+                                    "Ref": "VersionId"
+                                },
+                                "/cloudformation/_init/bootstrap.sh /var/tmp/bootstrap.sh",
+                                "\n",
+                                "chmod +x /var/tmp/bootstrap.sh",
+                                "\n",
+                                "/var/tmp/bootstrap.sh ",
+                                {
+                                    "Ref": "AutomationBucket"
+                                },
+                                " ",
+                                {
+                                    "Ref": "VersionId"
+                                },
+                                "\n",
+                                "/opt/aws/bin/cfn-signal -e 0 --stack ",
+                                {
+                                    "Ref": "AWS::StackName"
+                                },
+                                " --resource WebServerASG ",
+                                " --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                }
+                            ]
+                        ]
+                    }
+                }
+            }
+        },
+        "WebServerSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "WebServer HTTPS and SSH Access",
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "22",
+                        "ToPort": "22",
+                        "CidrIp": "0.0.0.0/0",
+                        "Description": "SSH"
+                    }
+                ],
+                "VpcId": {
+                    "Ref": "VPC"
+                }
+            }
+        },
+        "WebServerASG": {
+            "CreationPolicy": {
+                "ResourceSignal": {
+                    "Timeout": "PT15M",
+                    "Count": "1"
+                }
+            },
+            "UpdatePolicy": {
+                "AutoScalingRollingUpdate": {
+                    "MinInstancesInService": "1",
+                    "MaxBatchSize": "1",
+                    "PauseTime": "PT15M",
+                    "WaitOnResourceSignals": "true"
+                }
+            },
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "Properties": {
+                "VPCZoneIdentifier": {
+                    "Ref": "PublicSubnets"
+                },
+                "LaunchConfigurationName": {
+                    "Ref": "LaunchConfig"
+                },
+                "MinSize": "2",
+                "MaxSize": "3",
+                "ServiceLinkedRoleARN": {
+                    "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "web_server",
+                        "PropagateAtLaunch": "true"
+                    }
+                ],
+                "TargetGroupARNs": [
+                    {
+                        "Ref": "PubTargetGroup"
+                    }
+                ],
+                "NotificationConfiguration": {
+                    "TopicARN": {
+                        "Ref": "WebServerNotificationTopic"
+                    },
+                    "NotificationTypes": [
+                        "autoscaling:EC2_INSTANCE_LAUNCH",
+                        "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+                        "autoscaling:EC2_INSTANCE_TERMINATE",
+                        "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"
+                    ]
+                }
+            }
+        },
+        "WebServerScaleUpPolicy": {
+            "Type": "AWS::AutoScaling::ScalingPolicy",
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "WebServerASG"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "1"
+            }
+        },
+        "WebServerScaleDownPolicy": {
+            "Type": "AWS::AutoScaling::ScalingPolicy",
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "WebServerASG"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "-1"
+            }
+        },
+        "CPUAlarmHigh": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Scale-up if CPU > 90% for 10 minutes",
+                "MetricName": "CPUUtilization",
+                "Namespace": "AWS/EC2",
+                "Statistic": "Average",
+                "Period": "300",
+                "EvaluationPeriods": "2",
+                "Threshold": "90",
+                "AlarmActions": [
+                    {
+                        "Ref": "WebServerScaleUpPolicy"
+                    }
+                ],
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "WebServerASG"
+                        }
+                    }
+                ],
+                "ComparisonOperator": "GreaterThanThreshold"
+            }
+        },
+        "CPUAlarmLow": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Scale-down if CPU < 70% for 10 minutes",
+                "MetricName": "CPUUtilization",
+                "Namespace": "AWS/EC2",
+                "Statistic": "Average",
+                "Period": "300",
+                "EvaluationPeriods": "2",
+                "Threshold": "70",
+                "AlarmActions": [
+                    {
+                        "Ref": "WebServerScaleDownPolicy"
+                    }
+                ],
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "WebServerASG"
+                        }
+                    }
+                ],
+                "ComparisonOperator": "LessThanThreshold"
+            }
+        },
+        "LoadBalancerSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable HTTP and HTTPS access on the inbound port",
+                "VpcId": {
+                    "Ref": "VPC"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "80",
+                        "ToPort": "80",
+                        "CidrIp": "0.0.0.0/0",
+                        "Description": "http Access"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "443",
+                        "ToPort": "443",
+                        "CidrIp": "0.0.0.0/0",
+                        "Description": "https Access"
+                    }
+                ],
+                "SecurityGroupEgress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "80",
+                        "ToPort": "80",
+                        "SourceSecurityGroupId": {
+                            "Ref": "WebServerSecurityGroup"
+                        }
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "ALBAccess"
+                    }
+                ]
+            }
+        },
+        "UpdateIngressRuleForInstanceSG": {
+            "Type": "AWS::EC2::SecurityGroupIngress",
+            "Properties": {
+                "Description": "Inbound rule for public load balancer.",
+                "FromPort": 80,
+                "GroupId": {
+                    "Ref": "WebServerSecurityGroup"
+                },
+                "IpProtocol": "tcp",
+                "SourceSecurityGroupId": {
+                    "Ref": "LoadBalancerSecurityGroup"
+                },
+                "ToPort": 80
+            }
+        },
+        "PubTargetGroup": {
+            "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+            "Properties": {
+                "Name": {
+                    "Fn::Join": [
+                        "-",
+                        [
+                            {
+                                "Fn::GetAtt": [
+                                    "PubLoadBalancer",
+                                    "LoadBalancerName"
+                                ]
+                            },
+                            "tg",
+                            {
+                                "Ref": "VersionId"
+                            }
+                        ]
+                    ]
+                },
+                "VpcId": {
+                    "Ref": "VPC"
+                },
+                "Port": 80,
+                "Protocol": "HTTP",
+                "TargetGroupAttributes": [
+                    {
+                        "Key": "stickiness.enabled",
+                        "Value": true
+                    },
+                    {
+                        "Key": "stickiness.lb_cookie.duration_seconds",
+                        "Value": 604800
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "webserver-alb-pub-tg-80"
+                    }
+                ]
+            }
+        },
+        "PubLoadBalancer": {
+            "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "Properties": {
+                "Type": "application",
+                "Scheme": "internet-facing",
+                "Name": "web-server-alb-public",
+                "Subnets": {
+                    "Ref": "PublicSubnets"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "LoadBalancerSecurityGroup"
+                    }
+                ],
+                "LoadBalancerAttributes": [
+                    {
+                        "Key": "idle_timeout.timeout_seconds",
+                        "Value": "300"
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "web_server_alb"
+                    }
+                ]
+            }
+        },
+        "PubLoadBalancerHttpListener": {
+            "Type": "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties": {
+                "DefaultActions": [
+                    {
+                        "Type": "redirect",
+                        "RedirectConfig": {
+                            "Protocol": "HTTPS",
+                            "Port": "443",
+                            "Host": "#{host}",
+                            "Path": "/#{path}",
+                            "Query": "#{query}",
+                            "StatusCode": "HTTP_301"
+                        }
+                    }
+                ],
+                "LoadBalancerArn": {
+                    "Ref": "PubLoadBalancer"
+                },
+                "Port": 80,
+                "Protocol": "HTTP"
+            }
+        },
+        "PubLoadBalancerHttpsListener": {
+            "Type": "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties": {
+                "DefaultActions": [
+                    {
+                        "Type": "forward",
+                        "TargetGroupArn": {
+                            "Ref": "PubTargetGroup"
+                        }
+                    }
+                ],
+                "LoadBalancerArn": {
+                    "Ref": "PubLoadBalancer"
+                },
+                "Port": "443",
+                "Protocol": "HTTPS",
+                "SslPolicy": "ELBSecurityPolicy-TLS-1-2-2017-01",
+                "Certificates": [
+                    {
+                        "CertificateArn": {
+                            "Ref": "CertArn"
+                        }
+                    }
+                ]
+            }
+        },
+        "PubLoadBalancerPublicDns": {
+            "Type": "AWS::Route53::RecordSet",
+            "Description": "Public load balancer CNAME",
+            "Properties": {
+                "HostedZoneId": {
+                    "Ref": "HostedZoneId"
+                },
+                "Comment": "webserver public load balancer",
+                "Name": "webserver.genesiscloudautomation.com",
+                "Type": "A",
+                "AliasTarget": {
+                    "HostedZoneId": {
+                        "Fn::GetAtt": [
+                            "PubLoadBalancer",
+                            "CanonicalHostedZoneID"
+                        ]
+                    },
+                    "DNSName": {
+                        "Fn::GetAtt": [
+                            "PubLoadBalancer",
+                            "DNSName"
+                        ]
+                    }
+                }
+            },
+            "DependsOn": [
+                "PubLoadBalancer"
+            ]
+        }
+    }
+}
