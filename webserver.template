@@ -579,7 +579,7 @@
                     "Ref": "HostedZoneId"
                 },
                 "Comment": "webserver public load balancer",
-                "Name": "webserver.genesiscloudautomation.com",
+                "Name": "webserver.dileepreddy.com",
                 "Type": "A",
                 "AliasTarget": {
                     "HostedZoneId": {
